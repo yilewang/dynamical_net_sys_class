@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<style>
+
+/*Default edge style*/
+.link {
+/*  stroke: #000;
+  stroke-width: 1.5px;*/
+}
+
+/*Default node style*/
+.node {
+/*  fill: #000;
+  stroke: #fff;
+  stroke-width: 1.5px;*/
+}
+
+/*Style for if element is pinned*/
+.node.fixed {
+    stroke: #FF0000;
+}
+
+.slidertext { color: #494949; font-family: 'Open Sans', sans-serif; font-size: 18px; font-weight: 300; line-height: 24px; margin: 0 10px 16px; }
+
+.titletext { color: #FD5411; font-family: 'Open Sans', sans-serif; font-size: 26px; font-weight: 300; line-height: 30px; margin: 0 10px 16px; }
+/*{ color: #f2f2f2; background: #ff4a4a; font-size: 75px; line-height: 74px; font-weight: 700; margin: 0 5px 24px; float: left; padding: 10px; margin: 0 5px 24px; font-family: 'Libre Baskerville', serif; }*/
+
+</style>
+<body class="slidertext">
+Gravity:
+<input id="force-gravity" type="range" min="0.05" max="1" step = "0.05" value="0.1">
+<br>
+Force:
+<input id="force-charge" type="range" min="0" max="2000" step = "100" value="100">
+<br>
+Link length:
+<input id="force-linkdistance" type="range" min="10" max="250" step = "10" value="120">
+<br>
+<script src="src/d3.js"></script>
+<script src="src/json2.js"></script>
+<script src="src/underscore-min.js"></script>
+<script>
+// Websocket
+var ws;
+var wsclosed = true
+var strokeColors = [];
+var graphTitle = "";
+
+    
+function qs() {"use strict";
+var query, parms, i, pos, key, val, qsp;
+qsp = {};
+query = location.search.substring(1);
+parms = query.split('&');
+for (i=parms.length-1; i>=0; i--) {
+   pos = parms[i].indexOf('=');
+   if (pos > 0) {
+      key = parms[i].substring(0,pos);
+      val = parms[i].substring(pos+1);
+      qsp[key] = val;
+      }
+   }
+return qsp;
+}
+
+var urlparams = qs();
+
+if('port' in urlparams){
+    var port = urlparams.port;
+}
+else{
+    var port = 7890;
+}
+    
+if(('width' in urlparams) && ('height' in urlparams)) {
+    var width = urlparams.width,
+        height = urlparams.height;
+}
+else{
+    var width = 800,
+        height = 600;
+}
+    
+function waitForSocketConnection(socket, callback, tries){
+    setTimeout(
+        function(){
+            console.log('testing socket state...')
+            if (socket.readyState === 1) {
+                if(callback !== undefined){
+                    callback();
+                }
+                return;
+            } else {
+                if(tries>=0) {
+                    waitForSocketConnection(socket,callback, tries-1);
+                }
+                else {
+                    socket.close();
+                }
+            }
+        }, 100);
+};
+    
+
+
+if ('WebSocket' in window){
+    //setInterval(function() {
+        if(wsclosed) {
+            console.log('creating socket');
+            wsclosed = true
+            ws = new WebSocket("ws://127.0.0.1:"+port+"/ws");
+            ws.onopen = function() {
+                wsclosed = false
+                console.log('started socket');
+                console.log(ws.readyState);
+                waitForSocketConnection(ws, function() {
+                    ws.send("visualizer");
+                }, 50);
+            };
+            ws.onmessage = function (e) { 
+                console.log(e.data);
+                if(e.data.slice(0,2) == "+n") {
+                    force.nodes().push( JSON.parse(e.data.slice(2)) );
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "+e") {
+                    var nedge = JSON.parse(e.data.slice(2));
+                    force.links().push( nedge );
+                    
+                    if(nedge.directed == 1) {
+                        add_arrow(nedge.stroke);
+                    }
+                    
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "-n") {
+                    rmnode = JSON.parse(e.data.slice(2)).nid;
+                    force.nodes( _.reject(force.nodes(), function(obj){ return obj.nid == rmnode; }) );
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "-e") {
+                    rmedge = JSON.parse(e.data.slice(2)).eid;
+                    force.links( _.reject(force.links(), function(obj){ return obj.eid == rmedge; }) );
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "!n") {
+                    var upnode = JSON.parse(e.data.slice(2));
+                    for (var i=0;i<force.nodes().length;i++) { 
+                        if(force.nodes()[i].nid == upnode.nid) {
+                            force.nodes()[i].shape = upnode.shape;
+                            force.nodes()[i].strokewidth = upnode.strokewidth;
+                            force.nodes()[i].stroke = upnode.stroke;
+                            force.nodes()[i].fill = upnode.fill;
+                            force.nodes()[i].size = upnode.size;
+                            // console.log(force.nodes()[i])
+                            break;
+                        }
+                    }
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "!e") {
+                    var upedge = JSON.parse(e.data.slice(2));
+                    for (var i=0;i<force.links().length;i++) { 
+                        if(force.links()[i].eid == upedge.eid) {
+                            force.links()[i].stroke = upedge.stroke;
+                            force.links()[i].strokewidth = upedge.strokewidth;
+                            
+                            if(upedge.directed == 1) {
+                                add_arrow(upedge.stroke);
+                            }
+                        }
+                    }
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "mn") {
+                    var mvnode = JSON.parse(e.data.slice(2));
+                    for (var i=0;i<force.nodes().length;i++) { 
+                        if(force.nodes()[i].nid == mvnode.nid) {
+                            force.nodes()[i].x = mvnode.cx;
+                            force.nodes()[i].y = mvnode.cy;
+                            force.nodes()[i].px = mvnode.cx;
+                            force.nodes()[i].py = mvnode.cy;
+                            force.nodes()[i].fixed = mvnode.fixed;
+                            break;
+                        }
+                    }
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "cc") {
+                    force.nodes( [] );
+                    force.links( [] );
+                    //start();
+                }
+                else if(e.data.slice(0,2) == "up") {
+                    start(); start();
+                }
+                else if(e.data.slice(0,2) == "ti") {
+                    ti = JSON.parse(e.data.slice(2));
+                    graphTitle = ti.titlename;
+                }
+                else {
+                    console.log('unsupported update')
+                }
+                
+                if(e.data.slice(1,2) == "e") {
+                    
+                }
+            };
+            ws.onclose = function(e) { 
+                force.nodes( [] );
+                force.links( [] );
+                graphTitle = ""
+                start(); start();
+                console.log('websocket connection was closed');
+                //console.log(e)
+                wsclosed = true
+            };
+            ws.onerror = function(e) {
+                console.log(e);
+            };
+        }
+    //}, 3000); // Keep checking for socket connection every 3 seconds
+} else {
+alert('websocket NOT supported!')
+}
+
+// Used for zooming
+var xscale = d3.scale.linear()
+    .domain([0, width])
+    .range([0, width]);
+var yscale = d3.scale.linear()
+    .domain([0, height])
+    .range([height, 0]);
+
+// sets up the force layout
+var force = d3.layout.force()
+    .links([])
+    .nodes([])
+    .charge(-100)
+    .linkDistance(120)
+    .size([width, height])
+    .on("tick", tick);
+
+d3.select("#force-gravity").on("change",function() {force.gravity(this.value); force.start();} )
+d3.select("#force-charge").on("change",function() {force.charge(-this.value); force.start();} )
+d3.select("#force-linkdistance").on("change",function() {force.linkDistance(this.value); force.start();} )
+
+// enables dragging of nodes
+var drag = d3.behavior.drag()
+    .origin(function(d) { return {x: xscale(d.x),y: yscale(d.y)}; }) //center of circle
+    .on("dragstart", dragstart)
+    .on("drag", dragged)
+    .on("dragend", dragend);
+
+// set up svg layer with "semantic" zooming
+var svg = d3.select("body").append("svg")
+    .attr("width", width)
+    .attr("height", height)
+    .append("g")
+    .call(d3.behavior.zoom().x(xscale).y(yscale).scaleExtent([0.1, 10]).on("zoom", tick))
+    .on("dblclick.zoom", null);
+
+// add this layer to catch the mouse events for panning/zooming
+svg.append("rect")
+    .attr("width", width)
+    .attr("height", height)
+    .style("fill", "none")
+    .style("pointer-events", "all");
+
+var link = svg.selectAll(".link"),
+    node = svg.selectAll(".node");
+
+svg.append("text")
+    .attr("class","titletext")
+    .attr("x", 0)             
+    .attr("y", 30)
+    .attr("text-anchor", "left")  
+    .style("fill", "#FD5411")
+    .text(graphTitle);
+
+function add_arrow(stroke) {
+    var strokeSet = new Set(strokeColors);
+    if(strokeSet.has(stroke)){
+        console.log("already in the set: "+strokeColors.join())
+    }
+    else {
+        console.log("not in the set: "+strokeColors.join());
+        strokeColors.push(stroke);
+    
+        // define the arrow head marker type
+        svg.append("svg:defs").selectAll("marker")
+          .data([stroke])
+          .enter()
+            .append("svg:marker")
+            .attr('id', function(d){ return 'arrow_' + d.substring(1)})
+            //.attr("id", String)
+            .attr("viewBox", "0 -6 16 16")
+            .attr("refX", 0)
+//            .attr("refY", 0)
+            .attr("markerWidth", 4.5)
+            .attr("markerHeight", 4.5)
+            .attr("markerUnits","strokeWidth")
+            .attr("orient", "auto")
+            .append("svg:path")
+            .attr("d", "M0,-6L14,0L0,6")
+            .attr("fill", String);
+        console.log("now in the set: "+strokeColors.join());
+    }
+}
+
+var transtime = 200;
+function start() {
+    node = svg.selectAll(".node").data(force.nodes(), function(d) { return d.nid;});
+    
+    node.exit().transition().duration(transtime).style("opacity", 1e-6).remove();
+    
+    //node.enter().append("path")
+        //.attr("d", d3.svg.symbol().type("triangle-up")) //(function(d) { return d.shape; }) )
+    node.enter().append("circle")
+        .attr("class", "node")
+        .style("fill", function(d) { return d.fill; })
+        .style("stroke", function(d) { return d.stroke; })
+        .style("stroke-width", function(d) { return d.strokewidth; })
+        .style("opacity",1e-6)
+        .attr("r", function(d) { return d.size; })
+        .on("dblclick", dblclick)
+        .call(drag)
+        .append("title").text(function(d) { return decodeURIComponent(d.ntitle); });
+    
+    node.transition().duration(transtime)
+        .style("fill", function(d) { return d.fill; })
+        .style("stroke", function(d) { return d.stroke; })
+        .style("stroke-width", function(d) { return d.strokewidth; })
+        .attr("r", function(d) { return d.size; })
+        .style("opacity",1);
+    
+    link = svg.selectAll(".link").data(force.links(), function(d) { return d.source.nid + "-" + d.target.nid; });
+    
+    link.exit().transition().duration(transtime).style("opacity", 1e-6).remove();
+    
+    link.enter()//.insert("line", ":first-child")
+        .insert("polyline", ".node")
+        .attr("class", "link")
+        .attr("marker-mid", function(d) { 
+            if(d.directed == 0) {return "";}
+            else { return "url(#arrow_" + d.stroke.substring(1) + ")"; }
+        })
+        .style("stroke", function(d) { return d.stroke; })
+        .style("stroke-width", function(d) { return d.strokewidth; })
+        //.attr('orient', 'auto')
+        .style("opacity",1e-6);
+        
+    link.transition().duration(transtime)
+        .attr("marker-mid", function(d) { 
+            if(d.directed == 0) {return "";}
+            else { return "url(#arrow_" + d.stroke.substring(1) + ")"; }
+        })
+        .style("stroke", function(d) { return d.stroke; })
+        .style("stroke-width", function(d) { return d.strokewidth; })
+        .style("opacity",1);
+
+    svg.selectAll(".titletext").text(graphTitle);
+
+    force.start();
+}
+
+function tick() {
+    node.attr("cx", function(d) { return xscale(d.x); })
+        .attr("cy", function(d) { return yscale(d.y); })
+
+    // if using line for links
+    // link.attr("x1", function(d) { return xscale(d.source.x); })
+    //     .attr("y1", function(d) { return yscale(d.source.y); })
+    //     .attr("x2", function(d) { return xscale(d.target.x); })
+    //     .attr("y2", function(d) { return yscale(d.target.y); });
+    // for using polyline for links
+    
+    link.attr("points", function(d) { 
+        x1 = xscale(d.source.x);
+        y1 = yscale(d.source.y);
+        x2 = xscale(d.target.x);
+        y2 = yscale(d.target.y);
+        xm = xscale( d.source.x + (d.target.x-d.source.x)/2.0 );
+        ym = yscale( d.source.y + (d.target.y-d.source.y)/2.0 );
+        return x1+','+y1+' '+xm+','+ym+' '+x2+','+y2;
+    })
+}
+
+function dblclick(d) {
+    d3.select(this).classed("fixed", d.fixed = false);
+}
+
+function dragstart(d) {
+    d3.event.sourceEvent.stopPropagation();  
+    d.fixed = true
+}
+
+function dragged(d) {
+    d.px = xscale.invert(d3.event.x); 
+    d.py = yscale.invert(d3.event.y);
+    d.x = xscale.invert(d3.event.x); 
+    d.y = yscale.invert(d3.event.y); 
+    tick();
+}
+
+function dragend(d) {
+    force.resume();
+}
+</script>
